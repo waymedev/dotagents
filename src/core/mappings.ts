@@ -1,13 +1,16 @@
+import os from 'os';
 import path from 'path';
 import type { Client, Mapping, Scope } from './types.js';
 import { resolveRoots } from './paths.js';
 import { pathExists } from '../utils/fs.js';
+import { loadCustomMappings } from './custom-mappings.js';
 
 export type MappingOptions = {
   scope: Scope;
   projectRoot?: string;
   homeDir?: string;
   clients?: Client[];
+  customMappings?: string[];
 };
 
 export async function getMappings(opts: MappingOptions): Promise<Mapping[]> {
@@ -100,6 +103,14 @@ export async function getMappings(opts: MappingOptions): Promise<Mapping[]> {
       kind: 'dir',
     },
   );
+
+  const baseDir = opts.scope === 'global'
+    ? (opts.homeDir || os.homedir())
+    : (opts.projectRoot || process.cwd());
+  const custom = await loadCustomMappings(canonical, baseDir, {
+    selectedNames: opts.customMappings,
+  });
+  mappings.push(...custom);
 
   return mappings;
 }

@@ -11,12 +11,13 @@ import { undoLastChange } from './core/undo.js';
 import { preflightBackup } from './core/preflight.js';
 import type { Client, LinkStatus, Scope } from './core/types.js';
 import type { MigrationCandidate } from './core/migrate.js';
+import { loadCustomMappingEntries } from './core/custom-mappings.js';
 
 const appTitle = 'dotagents';
 
 type StatusSummary = { name: string; linked: number; missing: number; conflict: number };
 
-type Action = 'change' | 'status' | 'undo' | 'clients' | 'exit';
+type Action = 'change' | 'status' | 'undo' | 'clients' | 'custom' | 'exit';
 
 type ChangeChoice = 'force' | 'skip' | 'back';
 
@@ -183,13 +184,13 @@ async function resolveMigrationConflicts(plan: Awaited<ReturnType<typeof scanMig
   return selections;
 }
 
-async function runChange(scope: Scope, clients: Client[]): Promise<void> {
+async function runChange(scope: Scope, clients: Client[], customMappings?: string[]): Promise<void> {
   const spin = spinner();
   spin.start('Scanning current setup...');
   const roots = resolveRoots({ scope });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const migrate = await scanMigration({ scope, clients });
-  const link = await buildLinkPlan({ scope, clients });
+  const link = await buildLinkPlan({ scope, clients, customMappings });
   const backupDir = path.join(roots.canonicalRoot, 'backup', timestamp);
   spin.stop('Scan complete');
 
@@ -265,10 +266,11 @@ async function run(): Promise<void> {
   intro(chalk.cyan(appTitle));
   const scope = await selectScope();
   let clients = await selectClients();
+  let customMappings: string[] = [];
 
   while (true) {
-    const status = mergeAgentStatus(await getLinkStatus({ scope, clients }));
-    const plan = await buildLinkPlan({ scope, clients });
+    const status = mergeAgentStatus(await getLinkStatus({ scope, clients, customMappings }));
+    const plan = await buildLinkPlan({ scope, clients, customMappings });
     const conflicts = plan.conflicts.length || 0;
     const changes = plan.changes.length || 0;
     const summary = buildStatusSummary(status);
@@ -277,6 +279,7 @@ async function run(): Promise<void> {
     note([
       `Scope: ${scopeLabel(scope)}`,
       `Clients: ${formatClients(clients)}`,
+      `Custom mappings: ${customMappings.length > 0 ? customMappings.join(', ') : 'none'}`,
       `Pending changes: ${changes} · Conflicts: ${conflicts}`,
       ...summaryLines,
     ].join('\n'), 'Overview');
@@ -289,6 +292,7 @@ async function run(): Promise<void> {
       options.push({ label, value: 'change' });
     }
     options.push({ label: 'View status', value: 'status' });
+    options.push({ label: 'Custom mappings', value: 'custom' });
     options.push({ label: 'Change clients', value: 'clients' });
     options.push({ label: 'Undo last change', value: 'undo' });
     options.push({ label: 'Exit', value: 'exit' });
@@ -304,6 +308,27 @@ async function run(): Promise<void> {
 
     if (action === 'clients') {
       clients = await selectClients();
+      continue;
+    }
+
+    if (action === 'custom') {
+      const roots = resolveRoots({ scope });
+      const entries = await loadCustomMappingEntries(roots.canonicalRoot);
+      if (entries.length === 0) {
+        note('No custom mappings found in .agents/mappings.json', 'Custom mappings');
+        continue;
+      }
+      const selected = await multiselect({
+        message: 'Select custom mappings to apply',
+        options: entries.map((e) => ({
+          label: `${e.name} (${e.source} → ${e.targets.length} ${pluralize(e.targets.length, 'target')})`,
+          value: e.name,
+        })),
+        initialValues: customMappings,
+        required: false,
+      });
+      if (isCancel(selected)) continue;
+      customMappings = selected as string[];
       continue;
     }
 
@@ -335,7 +360,7 @@ async function run(): Promise<void> {
     }
 
     if (action === 'change') {
-      await runChange(scope, clients);
+      await runChange(scope, clients, customMappings);
     }
   }
 
